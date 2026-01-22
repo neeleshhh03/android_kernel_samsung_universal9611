@@ -2559,7 +2559,7 @@ static int kbase_cpu_mmap(struct kbase_context *kctx,
 	 * See MIDBASE-1057
 	 */
 
-	vma->vm_flags |= VM_DONTCOPY | VM_DONTDUMP | VM_DONTEXPAND | VM_IO;
+	vma->vm_flags |= VM_DONTCOPY | VM_DONTDUMP | VM_DONTEXPAND | VM_IO | VM_PFNMAP;
 	vma->vm_ops = &kbase_vm_ops;
 	vma->vm_private_data = map;
 
@@ -2592,7 +2592,7 @@ static int kbase_cpu_mmap(struct kbase_context *kctx,
 	} else {
 		WARN_ON(aligned_offset);
 		/* MIXEDMAP so we can vfree the kaddr early and not track it after map time */
-		vma->vm_flags |= VM_MIXEDMAP;
+		vma->vm_flags |= VM_PFNMAP;
 		/* vmalloc remaping is easy... */
 		err = remap_vmalloc_range(vma, kaddr, 0);
 		WARN_ON(err);
@@ -3201,7 +3201,7 @@ static int kbase_tracking_page_setup(struct kbase_context *kctx, struct vm_area_
 
 	/* no real access */
 	vma->vm_flags &= ~(VM_READ | VM_MAYREAD | VM_WRITE | VM_MAYWRITE | VM_EXEC | VM_MAYEXEC);
-	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND | VM_DONTDUMP | VM_IO;
+	vma->vm_flags |= VM_DONTCOPY | VM_DONTEXPAND | VM_DONTDUMP | VM_IO | VM_PFNMAP;
 
 	return 0;
 }
@@ -3392,7 +3392,7 @@ static int kbase_csf_cpu_mmap_user_io_pages(struct kbase_context *kctx,
 	if (err)
 		goto map_failed;
 
-	vma->vm_flags |= VM_DONTCOPY | VM_DONTDUMP | VM_DONTEXPAND | VM_IO;
+	vma->vm_flags |= VM_DONTCOPY | VM_DONTDUMP | VM_DONTEXPAND | VM_IO | VM_PFNMAP;
 	/* TODO use VM_MIXEDMAP, since it is more appropriate as both types of
 	 * memory with and without "struct page" backing are being inserted here.
 	 * Hw Doorbell pages comes from the device register area so kernel does
@@ -3499,7 +3499,7 @@ static int kbase_csf_cpu_mmap_user_reg_page(struct kbase_context *kctx,
 	/* Map uncached */
 	vma->vm_page_prot = pgprot_device(vma->vm_page_prot);
 
-	vma->vm_flags |= VM_DONTCOPY | VM_DONTDUMP | VM_DONTEXPAND | VM_IO;
+	vma->vm_flags |= VM_DONTCOPY | VM_DONTDUMP | VM_DONTEXPAND | VM_IO | VM_PFNMAP;
 
 	/* User register page comes from the device register area so
 	 * "struct page" isn't available for it.
