@@ -2889,6 +2889,7 @@
 
 	dpp_0: dpp@0x14884000 { /* GF */
 		compatible = "samsung,exynos9-dpp";
+		samsung,afbc-supported;
 		#pb-id-cells = <3>;
 		/* DPU_DMA, DPP, DPU_DMA_COMMON */
 		reg = <0x0 0x14884000 0x1000>, <0x0 0x14895000 0x1000>, <0x0 0x14880000 0x110>;
@@ -2919,6 +2920,7 @@
 
 	dpp_1: dpp@0x14883000 { /* VG0 */
 		compatible = "samsung,exynos9-dpp";
+		samsung,afbc-supported;
 		#pb-id-cells = <3>;
 		reg = <0x0 0x14883000 0x1000>, <0x0 0x14896000 0x1000>;
 		interrupts = <0 211 0>, <0 215 0>;
@@ -3291,6 +3293,7 @@
     mali: mali@11500000 {
         compatible = "arm,mali";
         reg = <0x0 0x11500000 0x5000>;
+	arm,maligpu-afbc = <1>;
         interrupts = <0 66 0>,
                      <0 67 0>,
                      <0 65 0>;
