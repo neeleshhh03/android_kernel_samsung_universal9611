@@ -12,11 +12,11 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04  # Using 22.04 for compatibility
+    runs-on: ubuntu-22.04
     
     steps:
     - name: Checkout this repo
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4  # Updated to v4
       
     - name: Setup Build Environment
       run: |
@@ -58,6 +58,37 @@ jobs:
         
         echo "✅ Toolchains ready"
         
+    - name: Debug - Check Kernel Structure
+      run: |
+        cd kernel-source
+        echo "📁 Kernel source structure:"
+        ls -la
+        echo ""
+        echo "📁 Arch directory:"
+        ls -la arch/
+        echo ""
+        echo "📁 ARM64 configs:"
+        ls -la arch/arm64/configs/ || echo "No arm64/configs directory"
+        
+    - name: Find Defconfig
+      run: |
+        cd kernel-source
+        
+        # First, check what branch we're on
+        echo "🌿 Current branch:"
+        git branch -a
+        
+        # List ALL defconfigs
+        echo "🔍 Searching for defconfigs..."
+        find . -name "*defconfig*" -type f | head -20
+        
+        # Look for common Samsung/Exynos defconfigs
+        echo "🔍 Looking for Samsung defconfigs..."
+        find . -name "*samsung*" -name "*config*" -type f
+        find . -name "*exynos*" -name "*config*" -type f
+        find . -name "*9611*" -name "*config*" -type f
+        find . -name "*f41*" -name "*config*" -type f
+        
     - name: Prepare Configuration
       run: |
         cd kernel-source
@@ -65,16 +96,42 @@ jobs:
         # Create build directory
         mkdir -p out
         
-        # Check available defconfigs
-        echo "🔍 Available defconfigs:"
-        find arch/arm64/configs -name "*defconfig*" | head -20 || true
-        
-        # Copy device tree defconfig if exists
+        # First check if device tree has defconfig
         if [ -f "../device-tree/defconfig" ]; then
           echo "📋 Using device tree defconfig"
           mkdir -p arch/arm64/configs/vendor
           cp ../device-tree/defconfig arch/arm64/configs/vendor/f41_defconfig
+          DEFCONFIG="vendor/f41_defconfig"
+        else
+          # Try to find the right defconfig
+          echo "🔍 Auto-detecting defconfig..."
+          
+          # Common defconfig names for Exynos 9611
+          POSSIBLE_CONFIGS=(
+            "exynos9610_defconfig"
+            "universal9611_defconfig" 
+            "exynos9611_defconfig"
+            "m20lte_defconfig"
+            "a50_defconfig"
+            "samsung_defconfig"
+          )
+          
+          for config in "${POSSIBLE_CONFIGS[@]}"; do
+            if [ -f "arch/arm64/configs/$config" ]; then
+              echo "✅ Found defconfig: $config"
+              DEFCONFIG="$config"
+              break
+            fi
+          done
+          
+          if [ -z "$DEFCONFIG" ]; then
+            echo "❌ No defconfig found. Listing all available:"
+            find arch/ -name "*defconfig" -type f
+            exit 1
+          fi
         fi
+        
+        echo "DEFCONFIG=$DEFCONFIG" >> $GITHUB_ENV
         
     - name: Build Kernel
       run: |
@@ -88,47 +145,37 @@ jobs:
         export CROSS_COMPILE=aarch64-linux-android-
         export LLVM=1
         
+        echo "🔧 Using defconfig: $DEFCONFIG"
+        
         # Clean
         make O=out clean && make O=out mrproper
         
-        # Try different defconfig names
-        echo "🔧 Looking for defconfig..."
+        # Apply defconfig
+        make O=out ARCH=arm64 $DEFCONFIG
         
-        # Check what defconfigs exist
-        DEFCONFIG_FOUND=$(find arch/arm64/configs -name "*defconfig" | head -5)
-        echo "Found defconfigs: $DEFCONFIG_FOUND"
-        
-        # Try common defconfigs
-        for config in vendor/f41_defconfig exynos9610_defconfig universal9611_defconfig; do
-          if [ -f "arch/arm64/configs/$config" ]; then
-            echo "✅ Using defconfig: $config"
-            make O=out ARCH=arm64 $config
-            break
-          fi
-        done
-        
-        # If no defconfig found, list all
-        if [ ! -f "out/.config" ]; then
-          echo "❌ No defconfig found. Listing all:"
-          find arch/arm64/configs -type f -name "*config*"
-          echo "Please specify correct defconfig name"
-          exit 1
-        fi
+        # Show config summary
+        echo "📋 Config summary:"
+        grep "CONFIG_LOCALVERSION" out/.config || true
         
         # Build kernel
         echo "🚀 Starting kernel build..."
-        make -j$(nproc) O=out ARCH=arm64
+        time make -j$(nproc) O=out ARCH=arm64 2>&1 | tee build.log
         
         # Check if build succeeded
         if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
           echo "🎉 Kernel build successful!"
+          echo "📊 Build size:"
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
           
           # Copy to AnyKernel3
           cp out/arch/arm64/boot/Image.gz-dtb ../AnyKernel3/
         else
           echo "❌ Kernel image not found!"
-          echo "Checking build output..."
-          ls -la out/arch/arm64/boot/ || true
+          echo "Last 50 lines of build log:"
+          tail -50 build.log
+          echo ""
+          echo "Checking output directory:"
+          find out/ -name "Image*" -type f || true
           exit 1
         fi
         
@@ -139,30 +186,79 @@ jobs:
         # Create AnyKernel script
         cat > anykernel.sh << 'EOF'
         # AnyKernel3 Script
+        # For Samsung Galaxy F41
+        
+        ## AnyKernel setup
+        properties() {
+        kernel.string=F41-Kernel-Android16
         do.devicecheck=1
         do.modules=0
         do.systemless=1
         do.cleanup=1
         device.name1=f41
         device.name2=m20lte
+        supported.versions=16
+        '; }
+        
+        ## AnyKernel file attributes
+        attributes() {
+        set_perm_recursive 0 0 755 644 $ramdisk/*;
+        set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+        }
+        
+        ## AnyKernel install
         block=/dev/block/platform/13520000.ufs/by-name/BOOT;
         is_slot_device=0;
+        ramdisk_compression=auto;
+        
         . tools/ak3-core.sh;
+        
         dump_boot;
         write_boot;
         EOF
         
+        # Add version info
+        echo "Build Date: $(date)" > version.txt
+        echo "Android: ${{ env.ANDROID_VERSION }}" >> version.txt
+        echo "Source: ${{ env.KERNEL_SOURCE }}" >> version.txt
+        
         # Create zip
         ZIP_NAME="F41-Kernel-Android16-$(date +%Y%m%d-%H%M).zip"
-        zip -r9 ../$ZIP_NAME . -x ".git*"
+        zip -r9 ../$ZIP_NAME . -x ".git*" "*.gitignore"
         
         # Move to artifacts
         mkdir -p ../artifacts
         mv ../$ZIP_NAME ../artifacts/
-        echo "📦 Created: $ZIP_NAME"
+        cp ../kernel-source/build.log ../artifacts/
         
-    - name: Upload Artifacts
-      uses: actions/upload-artifact@v3
+        echo "📦 Created: artifacts/$ZIP_NAME"
+        echo "📄 Build log: artifacts/build.log"
+        
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4  # Updated to v4
       with:
-        name: kernel-package
-        path: artifacts/
+        name: kernel-build-${{ github.run_number }}
+        path: |
+          artifacts/
+          kernel-source/build.log
+        retention-days: 7
+        
+    - name: Show Success Message
+      if: success()
+      run: |
+        echo "========================================="
+        echo "✅ KERNEL BUILD COMPLETED SUCCESSFULLY!"
+        echo "========================================="
+        echo ""
+        echo "Download the kernel from:"
+        echo "1. Go to Actions tab"
+        echo "2. Click on this workflow run (#${{ github.run_number }})"
+        echo "3. Scroll down to 'Artifacts' section"
+        echo "4. Download 'kernel-build-${{ github.run_number }}'"
+        echo ""
+        echo "Flash instructions:"
+        echo "1. Boot to TWRP/Recovery"
+        echo "2. Flash the ZIP file"
+        echo "3. Wipe Dalvik/Cache"
+        echo "4. Reboot"
+        echo "========================================="
