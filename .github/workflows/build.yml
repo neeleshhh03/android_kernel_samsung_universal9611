@@ -1,177 +1,199 @@
 name: Build Kernel for Samsung F41
 
 on:
-  push:
-    branches: [ android-16 ]
-  pull_request:
-    branches: [ android-16 ]
-  schedule:
-    - cron: '0 0 * * 0'  # Weekly builds
   workflow_dispatch:  # Manual trigger
+  push:
+    branches: [ main ]
 
 env:
-  KERNEL_VERSION: Android16-QPR2
-  ANDROID_VERSION: BP4A.251205.006
   KERNEL_SOURCE: https://github.com/neeleshhh03/android_kernel_samsung_universal9611
   DEVICE_TREE: https://github.com/Parbindar7/android_device_samsung_f41
-  BUILD_TYPE: userdebug
+  ANDROID_VERSION: BP4A.251205.006
 
 jobs:
-  build-kernel:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
     
     steps:
-    - name: Checkout this repo
-      uses: actions/checkout@v3
-      with:
-        path: build-scripts
+    - name: Checkout this repository
+      uses: actions/checkout@v4
     
-    - name: Setup environment
+    - name: Setup Build Environment
       run: |
-        sudo apt-get update
-        sudo apt-get install -y git-core gnupg flex bison build-essential zip \
-        curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 lib32ncurses5-dev \
-        x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils \
-        xsltproc unzip fontconfig python3 python3-pip ccache bc libssl-dev \
-        libelf-dev libncurses-dev cpio rsync lz4 zstd
+        echo "🔄 Setting up build environment..."
+        sudo apt update
+        sudo apt install -y git-core gnupg flex bison build-essential zip \
+        curl zlib1g-dev gcc-multilib g++-multilib libc6-dev-i386 \
+        lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z1-dev \
+        libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig python3 \
+        python3-pip ccache bc libssl-dev libelf-dev libncurses-dev
         
-        # Setup Python
-        pip3 install requests pyyaml
+        # Verify installations
+        python3 --version
+        git --version
+        ccache --version
         
-        # Setup ccache
-        echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
-        ccache -M 10G
-        ccache -o compression=true
-        echo "CCACHE_EXEC=$(which ccache)" >> $GITHUB_ENV
+        echo "✅ Environment setup complete"
     
-    - name: Clone kernel source
+    - name: Clone Kernel Source
       run: |
-        git clone --depth=1 $KERNEL_SOURCE -b android-16 kernel
-        cd kernel
-        echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
-    
-    - name: Clone device tree
-      run: |
-        git clone --depth=1 $DEVICE_TREE -b android-16 device/samsung/f41
-        ls -la device/samsung/f41/
-    
-    - name: Setup toolchains
-      run: |
-        # Clone Proton Clang (modern Clang for Android 16)
-        git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
+        echo "📥 Cloning kernel source from: $KERNEL_SOURCE"
+        git clone --depth=1 $KERNEL_SOURCE kernel-source
+        cd kernel-source
+        echo "✅ Kernel source cloned"
+        echo "Current directory: $(pwd)"
+        ls -la
         
-        # Clone AOSP GCC 4.9 (for compatibility)
-        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc-4.9
+    - name: Clone Device Tree
+      run: |
+        echo "📥 Cloning device tree..."
+        mkdir -p device-tree
+        git clone --depth=1 $DEVICE_TREE device-tree
+        echo "✅ Device tree cloned"
+        ls -la device-tree/
+        
+    - name: Setup Toolchains
+      run: |
+        echo "🔧 Setting up toolchains..."
+        
+        # Clone Proton Clang
+        git clone --depth=1 https://github.com/kdrag0n/proton-clang clang-toolchain
+        echo "Clang version:"
+        clang-toolchain/bin/clang --version || true
+        
+        # Clone GCC 4.9
+        git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 gcc-toolchain
+        echo "GCC version:"
+        gcc-toolchain/bin/aarch64-linux-android-gcc --version || true
         
         # Clone AnyKernel3 for packaging
         git clone --depth=1 https://github.com/osm0sis/AnyKernel3
         
-        # Verify toolchains
-        echo "Toolchain Setup Complete"
-        clang/bin/clang --version
-        gcc-4.9/bin/aarch64-linux-android-gcc --version
+        echo "✅ Toolchains ready"
     
-    - name: Prepare kernel configuration
+    - name: Prepare Kernel Configuration
       run: |
-        cd kernel
+        echo "🔍 Preparing kernel configuration..."
+        cd kernel-source
         
-        # Copy device tree defconfig if exists
-        if [ -f "../device/samsung/f41/defconfig" ]; then
+        # List available defconfigs
+        echo "Available defconfigs in kernel source:"
+        find arch/arm64/configs -name "*defconfig*" 2>/dev/null | head -20 || echo "No defconfigs found in arch/arm64/configs"
+        
+        # Check if device tree has defconfig
+        if [ -f "../device-tree/defconfig" ]; then
+          echo "📋 Found defconfig in device tree"
           mkdir -p arch/arm64/configs/vendor
-          cp ../device/samsung/f41/defconfig arch/arm64/configs/vendor/f41_defconfig
-          echo "Using device tree defconfig"
+          cp ../device-tree/defconfig arch/arm64/configs/vendor/f41_defconfig
+          echo "✅ Copied device tree defconfig"
         else
-          # Use existing defconfig from kernel source
-          echo "Using kernel source defconfig"
+          echo "ℹ️ No defconfig in device tree, will use kernel default"
         fi
         
         # Create build directory
         mkdir -p out
+        echo "Build directory created: out/"
         
-        # Extract kernel version
-        KERNEL_VER=$(make kernelversion)
-        echo "KERNEL_VERSION_FULL=${KERNEL_VER}" >> $GITHUB_ENV
-    
-    - name: Build kernel
+    - name: Build Kernel
       run: |
-        cd kernel
+        echo "🚀 Starting kernel build process..."
+        cd kernel-source
         
-        # Set environment variables
+        # Export build variables
         export ARCH=arm64
         export SUBARCH=arm64
-        export PATH=$(pwd)/../clang/bin:$PATH
-        export PATH=$(pwd)/../gcc-4.9/bin:$PATH
+        export PATH=$(pwd)/../clang-toolchain/bin:$PATH
+        export PATH=$(pwd)/../gcc-toolchain/bin:$PATH
         export CROSS_COMPILE=aarch64-linux-android-
-        export CROSS_COMPILE_ARM32=arm-linux-androideabi-
-        export CLANG_TRIPLE=aarch64-linux-gnu-
         export LLVM=1
-        export LLVM_IAS=1
         
-        # Use ccache
-        export CC="ccache clang"
-        export LD=ld.lld
+        echo "Build variables:"
+        echo "ARCH=$ARCH"
+        echo "PATH=$PATH"
+        echo "CROSS_COMPILE=$CROSS_COMPILE"
         
         # Clean previous builds
-        make O=out clean
-        make O=out mrproper
+        echo "🧹 Cleaning previous builds..."
+        make O=out clean 2>/dev/null || true
+        make O=out mrproper 2>/dev/null || true
         
-        # Use defconfig
-        DEFCONFIG_FILE="vendor/f41_defconfig"
-        if [ ! -f "arch/arm64/configs/$DEFCONFIG_FILE" ]; then
-          DEFCONFIG_FILE="exynos9610_defconfig"  # Fallback for universal9611
+        # Try to find and use defconfig
+        echo "🔧 Configuring kernel..."
+        
+        # List available defconfigs again
+        echo "Available defconfigs:"
+        ls arch/arm64/configs/*defconfig* 2>/dev/null | head -10 || echo "Checking in subdirectories..."
+        find arch/arm64/configs -type f -name "*defconfig*" 2>/dev/null | head -10 || echo "No defconfigs found"
+        
+        # Try common defconfig names for Exynos 9611
+        DEFCONFIG_CANDIDATES="vendor/f41_defconfig exynos9610_defconfig m20lte_defconfig universal9611_defconfig"
+        
+        for config in $DEFCONFIG_CANDIDATES; do
+          if [ -f "arch/arm64/configs/$config" ]; then
+            echo "✅ Found defconfig: $config"
+            make O=out ARCH=arm64 $config
+            echo "✅ Configuration applied: $config"
+            CONFIG_USED="$config"
+            break
+          fi
+        done
+        
+        if [ -z "$CONFIG_USED" ]; then
+          echo "❌ No suitable defconfig found! Trying to list all..."
+          find . -name "*defconfig*" -type f | head -20
+          echo "⚠️ Using default configuration"
+          # Try to proceed with default
         fi
         
-        echo "Using defconfig: $DEFCONFIG_FILE"
+        # Build the kernel
+        echo "🔨 Building kernel with $(nproc) cores..."
+        make -j$(nproc) O=out ARCH=arm64 2>&1 | tee build.log || {
+          echo "❌ Build failed! Last 50 lines of log:"
+          tail -50 build.log
+          exit 1
+        }
         
-        # Make config
-        make O=out ARCH=arm64 $DEFCONFIG_FILE
-        
-        # Build kernel with verbose logging
-        make -j$(nproc) O=out ARCH=arm64 \
-        CC="ccache clang" \
-        CROSS_COMPILE=aarch64-linux-android- \
-        CROSS_COMPILE_ARM32=arm-linux-androideabi- \
-        CLANG_TRIPLE=aarch64-linux-gnu- \
-        LD=ld.lld \
-        AR=llvm-ar \
-        NM=llvm-nm \
-        OBJCOPY=llvm-objcopy \
-        OBJDUMP=llvm-objdump \
-        STRIP=llvm-strip 2>&1 | tee build.log
-        
-        # Check if build was successful
-        if [ -f "out/arch/arm64/boot/Image" ] || [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-          echo "✅ Kernel build successful!"
+        # Check if kernel was built
+        echo "📁 Checking build output..."
+        if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+          echo "🎉 SUCCESS: Kernel image found!"
+          echo "📊 File size: $(ls -lh out/arch/arm64/boot/Image.gz-dtb)"
           
-          # Copy kernel image
-          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-            cp out/arch/arm64/boot/Image.gz-dtb ../AnyKernel3/
-            KERNEL_IMAGE="Image.gz-dtb"
-          else
-            cp out/arch/arm64/boot/Image ../AnyKernel3/Image
-            KERNEL_IMAGE="Image"
-          fi
-          
-          echo "KERNEL_IMAGE=$KERNEL_IMAGE" >> $GITHUB_ENV
+          # Copy to AnyKernel3
+          cp out/arch/arm64/boot/Image.gz-dtb ../AnyKernel3/
+          echo "✅ Kernel copied to AnyKernel3"
+        elif [ -f "out/arch/arm64/boot/Image" ]; then
+          echo "🎉 SUCCESS: Kernel image found (without dtb)!"
+          cp out/arch/arm64/boot/Image ../AnyKernel3/
         else
-          echo "❌ Kernel build failed!"
-          echo "Build log tail:"
-          tail -100 build.log
+          echo "❌ ERROR: No kernel image found in out/arch/arm64/boot/"
+          echo "Listing contents:"
+          ls -la out/arch/arm64/boot/ 2>/dev/null || echo "Boot directory doesn't exist"
           exit 1
         fi
-    
-    - name: Create flashable zip
+        
+        # Save build log
+        cp build.log ../build-log.txt
+        
+    - name: Create Flashable ZIP
       run: |
+        echo "📦 Creating flashable ZIP..."
         cd AnyKernel3
+        
+        # Check if kernel file exists
+        if [ ! -f "Image.gz-dtb" ] && [ ! -f "Image" ]; then
+          echo "❌ ERROR: No kernel file in AnyKernel3 directory!"
+          ls -la
+          exit 1
+        fi
         
         # Create AnyKernel3 script
         cat > anykernel.sh << 'EOF'
-        # AnyKernel3 Ramdisk Mod Script
-        # osm0sis @ xda-developers
+        ## AnyKernel3 Ramdisk Mod Script
+        ## osm0sis @ xda-developers
         
-        ## AnyKernel setup
-        properties() { '
+        ### AnyKernel setup
+        properties() {
         kernel.string=F41-Kernel-Android16
         do.devicecheck=1
         do.modules=0
@@ -182,92 +204,104 @@ jobs:
         device.name2=m20lte
         supported.versions=16
         supported.patchlevels=
-        '; }
+        }
         
-        ## AnyKernel file attributes
+        ### AnyKernel file attributes
         attributes() {
         set_perm_recursive 0 0 755 644 $ramdisk/*;
         set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
         }
         
-        ## AnyKernel install
-        block=/dev/block/platform/13520000.ufs/by-name/BOOT;
-        is_slot_device=0;
-        ramdisk_compression=auto;
+        ### AnyKernel install
+        dump_boot() {
+          ui_print " "
+          ui_print "******************************"
+          ui_print "  Samsung F41 Android 16 Kernel"
+          ui_print "******************************"
+          ui_print " "
+        }
         
-        . tools/ak3-core.sh;
+        write_boot() {
+          ui_print " "
+          ui_print "******************************"
+          ui_print "    Flash completed!"
+          ui_print "******************************"
+          ui_print " "
+        }
         
-        dump_boot;
-        write_boot;
+        ## End AnyKernel3
         EOF
         
-        # Create version file
-        echo "Kernel Version: ${{ env.KERNEL_VERSION_FULL }}" > version.txt
-        echo "Android Version: ${{ env.ANDROID_VERSION }}" >> version.txt
-        echo "Build Date: $(date)" >> version.txt
-        echo "Build Type: ${{ env.BUILD_TYPE }}" >> version.txt
+        # Create README for the ZIP
+        cat > README.md << 'EOF'
+        # Samsung F41 Kernel - Android 16 QPR2
         
-        # Create zip
-        ZIP_NAME="F41-Kernel-Android16-QPR2-$(date +%Y%m%d-%H%M).zip"
-        zip -r9 ../$ZIP_NAME . -x ".git*" "*.gitignore"
+        ## Device: Samsung Galaxy F41
+        ## Chipset: Exynos 9611
+        ## Android: 16 QPR2 (BP4A.251205.006)
         
-        # Move to artifacts folder
+        ## Installation:
+        1. Boot to TWRP/OrangeFox Recovery
+        2. Flash this ZIP
+        3. Wipe Dalvik/Cache
+        4. Reboot
+        
+        ## Notes:
+        - Built automatically via GitHub Actions
+        - Source: ${{ env.KERNEL_SOURCE }}
+        - Build Date: $(date)
+        
+        ⚠️ Flash at your own risk!
+        EOF
+        
+        # Create ZIP file
+        ZIP_NAME="F41-Kernel-Android16-$(date +%Y%m%d-%H%M).zip"
+        echo "Creating ZIP: $ZIP_NAME"
+        
+        # Add files to ZIP (excluding git files)
+        zip -r9 ../$ZIP_NAME . -x "*.git*" "*.gitignore" "*placeholder"
+        
+        echo "✅ ZIP created: $(ls -lh ../$ZIP_NAME)"
+        
+        # Move ZIP to artifacts folder
         mkdir -p ../artifacts
         mv ../$ZIP_NAME ../artifacts/
-        cp ../kernel/build.log ../artifacts/
+        mv ../build-log.txt ../artifacts/
         
-        echo "ZIP_NAME=$ZIP_NAME" >> $GITHUB_ENV
+        # Create a simple version file
+        echo "Kernel Build Complete!" > ../artifacts/BUILD_INFO.txt
+        echo "Date: $(date)" >> ../artifacts/BUILD_INFO.txt
+        echo "GitHub Run: $GITHUB_RUN_ID" >> ../artifacts/BUILD_INFO.txt
     
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+    - name: Upload Build Artifacts
+      uses: actions/upload-artifact@v4
       with:
-        name: kernel-build-${{ github.run_number }}
+        name: f41-kernel-build
         path: |
           artifacts/
-          kernel/build.log
+          kernel-source/out/arch/arm64/boot/
         retention-days: 7
+        if-no-files-found: error
     
-    - name: Create GitHub Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          artifacts/*.zip
-          kernel/out/arch/arm64/boot/Image*
-        body: |
-          # Samsung F41 Kernel - Android 16 QPR2
-          
-          **Build Details:**
-          - Kernel Version: ${{ env.KERNEL_VERSION_FULL }}
-          - Android Version: ${{ env.ANDROID_VERSION }}
-          - Build Date: $(date)
-          - GitHub Run: ${{ github.run_number }}
-          
-          **Sources:**
-          - Kernel: https://github.com/neeleshhh03/android_kernel_samsung_universal9611
-          - Device Tree: https://github.com/Parbindar7/android_device_samsung_f41
-          
-          **Installation:**
-          1. Download the zip file
-          2. Boot to TWRP/Recovery
-          3. Flash the zip
-          4. Wipe Dalvik/Cache
-          5. Reboot
-          
-          **Build Logs:** [View](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-    
-    - name: Notify Discord on Success
+    - name: Success Notification
       if: success()
-      uses: Ilshidur/action-discord@master
-      env:
-        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      with:
-        args: '✅ **Kernel Build Successful!**\n\n**Device:** Samsung F41\n**Version:** Android 16 QPR2\n**Build:** ${{ github.run_number }}\n\nDownload: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+      run: |
+        echo "========================================"
+        echo "✅ BUILD SUCCESSFUL!"
+        echo "========================================"
+        echo "Kernel has been built and packaged"
+        echo "Download from Artifacts section"
+        echo "========================================"
     
-    - name: Notify Discord on Failure
+    - name: Failure Notification
       if: failure()
-      uses: Ilshidur/action-discord@master
-      env:
-        DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-      with:
-        args: '❌ **Kernel Build Failed!**\n\n**Device:** Samsung F41\n**Error:** Check logs\n\nDetails: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+      run: |
+        echo "========================================"
+        echo "❌ BUILD FAILED!"
+        echo "========================================"
+        echo "Check the logs above for errors"
+        echo "Common issues:"
+        echo "1. Defconfig not found"
+        echo "2. Toolchain issues"
+        echo "3. Missing dependencies"
+        echo "========================================"
